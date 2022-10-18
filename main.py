@@ -59,11 +59,11 @@ def chacha20_xor_stream(key, iv, counter=0):
         ctx[12] = (ctx[12] + 1) & 0xffffffff
 
 
-def chacha20_encrypt(data, key, iv=None, counter=1):
+def chacha20_encrypt(data, key, iv=None, counter=1):  # RFC 7539 defined value for counter to 1 and with this IV
     if not isinstance(data, bytes):
         raise TypeError
     if iv is None:
-        iv = secrets.token_bytes(12)
+        iv = b'\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00'  # RFC 7539 defined value for counter to 1 and with this IV
     if isinstance(key, bytes):
         if not key:
             raise ValueError('Key is empty.')
@@ -77,10 +77,11 @@ def chacha20_encrypt(data, key, iv=None, counter=1):
 
 def start_gui():
     layout = [
-        [sg.Text('Datoteka'), sg.InputText(), sg.FileBrowse('Išči')],
-        [sg.Text('Ključ'), sg.InputText()],
+        [sg.Text('Šifriranje'), sg.InputText(key='_encrypt_input_file_'), sg.FileBrowse('Odpri')],
+        [sg.Text('Dešifriranje'), sg.InputText(key='_dencrypt_input_file_'), sg.FileBrowse('Odpri')],
+        [sg.Text('Ključ'), sg.InputText(key='_key_input_'), sg.Button(button_text='Generiraj ključ')],
         [sg.Output(size=(88, 20))],
-        [sg.Submit(button_text='Šifriraj'), sg.Cancel(button_text='Zapri')]
+        [sg.Button(button_text='Šifriraj'), sg.Button(button_text='Dešifriraj'), sg.Cancel(button_text='Zapri')]
     ]
     window = sg.Window('ChaCha20 šifra', layout)
 
@@ -88,50 +89,79 @@ def start_gui():
         event, values = window.read()
         if event in (None, 'Exit', 'Cancel', 'Zapri'):
             break
-        if event == 'Submit' or event == 'Šifriraj':
+        if event == 'Generiraj ključ':
+            window['_key_input_'].Update(secrets.token_urlsafe(24))
+
+        if event == 'Submit' or event == 'Šifriraj' or event == 'Dešifriraj':
             filepath = key = is_validation_ok = None
-            if values[0]:
-                filepath = values[0]
-                key = secrets.token_bytes(32)  # values[1]
-                # key = bytes(key, 'UTF-8')
+            if values['_encrypt_input_file_'] or values['_dencrypt_input_file_']:
+                if event == 'Šifriraj':
+                    filepath = values['_encrypt_input_file_']
+                elif event == 'Dešifriraj':
+                    filepath = values['_dencrypt_input_file_']
+
                 is_validation_ok = True
                 if not filepath and filepath is not None:
                     print('Napaka: pot do datoteke ni pravilna.')
                     is_validation_ok = False
-                # elif not key and key is not None:
-                #     print('Napaka: Ključ ni v pravilni obliki.')
-                #     is_validation_ok = False
                 elif is_validation_ok:
                     try:
                         start_time = time.process_time()
-                        with open(filepath, 'rb') as data, \
-                                open(filepath[:-4] + '-result' + filepath[-4:], 'wb') as encrypted_result, \
-                                open(filepath[:-4] + '-result2' + filepath[-4:], 'wb') as decrypted_result:
+                        with open(filepath, 'rb') as data:
 
                             raw_data = data.read()
                             print(f"--- Open and read FILE Time --- {time.process_time() - start_time}")
 
-                            start_time = time.process_time()
-                            encrypted_file = chacha20_encrypt(raw_data, key)
-                            print(f"--- encrypted_file Time --- {time.process_time() - start_time}")
-                            print(
-                                f"--- encrypted_file cycles per second --- {len(raw_data) / (time.process_time() - start_time)} B/s")
-                            encrypted_result.write(encrypted_file)
+                            # A 96-bit nonce (IV - Initialization Vector) -- different for each invocation with the same key
+                            # The protocol will specify a 96-bit or 64-bit nonce.  This MUST be
+                            # unique per invocation with the same key, so it MUST NOT be
+                            # randomly generated.  A counter is a good way to implement this,
+                            # but other methods, such as a Linear Feedback Shift Register (LFSR)
+                            # are also acceptable.  ChaCha20 as specified here requires a 96-bit
+                            # nonce.  So if the provided nonce is only 64-bit, then the first 32
+                            # bits of the nonce will be set to a constant number.  This will
+                            # usually be zero, but for protocols with multiple senders it may be
+                            # different for each sender, but should be the same for all
+                            # invocations of the function with the same key by a particular
+                            # sender.
+                            iv = b'\x00\x00\x00\x09\x00\x00\x00\x4a\x00\x00\x00\x00'  # RFC 7539 defined value for counter to 1 and with this IV
 
-                            start_time = time.process_time()
-                            decrypted_file = chacha20_encrypt(encrypted_file, key)
-                            print(f"--- decrypted_file Time --- {time.process_time() - start_time}")
-                            print(
-                                f"--- decrypted_file  cycles per second --- {len(raw_data) / (time.process_time() - start_time)} B/s")
-                            decrypted_result.write(decrypted_file)
+                            if event == 'Šifriraj':
+                                key = bytes(values['_key_input_'], 'utf-8')  # secrets.token_bytes(32)
+
+                                with open(filepath[:-len(filepath.split("/")[-1])] + "secret_key.txt", 'wb') as secret_keys:
+                                    secret_keys.write(key)
+
+                                start_time = time.process_time()
+
+                                encrypted_file = chacha20_encrypt(raw_data, key, iv)
+
+                                print(f"--- encrypted_file Time --- {time.process_time() - start_time}")
+                                print(f"--- encrypted_file cycles per second --- {(len(raw_data) / (time.process_time() - start_time)) * 10 ** -6} MB/s")
+
+                                filepath = filepath[:-4] + '-result-encrypted' + filepath[-4:]
+                                with open(filepath, 'wb') as encrypted_result:
+                                    encrypted_result.write(encrypted_file)
+
+                            if event == 'Dešifriraj':
+                                with open(filepath[:-len(filepath.split("/")[-1])] + "secret_key.txt", 'rb') as secret_keys:
+                                    key = secret_keys.read()
+
+                                start_time = time.process_time()
+
+                                decrypted_file = chacha20_encrypt(encrypted_file, key, iv)
+
+                                print(f"--- decrypted_file Time --- {time.process_time() - start_time}")
+                                print(f"--- decrypted_file  cycles per second --- {(len(raw_data) / (time.process_time() - start_time)) * 10 ** -6} MB/s")
+
+                                filepath = filepath[:-4].split("-result-encrypted")[0] + '-result-decrypted' + filepath[-4:]
+                                with open(filepath, 'wb') as decrypted_result:
+                                    decrypted_result.write(decrypted_file)
 
                             print('Pot datoteke:', filepath)
                             print('Ključ: ', key)
-                            print("DATA: ", len(raw_data))
-                            print("Originalna velikost datoteke: ", os.path.getsize(filepath))
-                            print("------------------------------------------------")
-                            print("Velikost datotek: ", len(raw_data), len(decrypted_file))
-                            print("Je vsebina datotek enaka? ", raw_data == decrypted_file)
+                            print("Velikost datoteke: ", os.path.getsize(filepath))
+                            print("------------------------------------------------\n")
                     except:
                         print('*** Napaka v procesu šifriranja/dešifriranja ***')
             else:
